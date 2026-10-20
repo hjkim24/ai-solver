@@ -1,0 +1,15 @@
+build/
+dist/
+.superpowers/
+.DS_Store
+*.log
+__pycache__/
+.env
+.env.*
+!.env.example
+*.keychain
+*.keychain-db
+*.p12
+*.pfx
+*.pem
+*.key

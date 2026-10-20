@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ko">
+<meta charset="utf-8">
+<title>AI Solver local self-check</title>
+<style>
+body { margin: 20px; font: 14px sans-serif; }
+#questions { width: 680px; margin-left: 100px; }
+.question { border: 2px solid #555; padding: 8px; margin: 10px 0; }
+.question_name { font-weight: bold; }
+.answer { line-height: 24px; }
+#nav { position: absolute; left: 10px; top: 30px; }
+#result { white-space: pre-wrap; }
+</style>
+<nav id="nav"><span id="sidebar-number">4</span></nav>
+<main id="questions"></main>
+<button id="submit">제출</button>
+<pre id="result">RUNNING</pre>
+<script>
+for (let n = 3; n <= 7; n++) {
+  const item = document.createElement('section');
+  item.id = `question_${n}`;
+  item.className = 'display_question question multiple_choice_question';
+  item.innerHTML = `<header><span class="question_name">문제 ${n}</span></header>
+    <div class="question_text">문항${n} 전용 본문: 물의 분자식은?</div>
+    <div class="answers">${['H₂O', 'CO₂', 'O₂', 'N₂'].map((text, i) =>
+      `<div class="answer"><label><input type="radio" name="q${n}" value="${i}"><span class="answer_text">문항${n} ${text}</span></label></div>`).join('')}</div>`;
+  document.querySelector('#questions').append(item);
+}
+</script>
+<script src="../question-locator.js"></script>
+<script src="../crop.js"></script>
+<script src="../capture-page.js"></script>
+<script>
+(async () => {
+  const passed = [], failed = [];
+  function check(name, body) {
+    try { body(); passed.push(name); }
+    catch (error) { failed.push({name, error: error.message}); }
+  }
+  function assert(value, message) { if (!value) throw new Error(message); }
+  const viewport = {width: innerWidth, height: innerHeight};
+  check('locator exists', () => assert(globalThis.AISolverLocator, '문항 탐지기가 아직 구현되지 않음'));
+  if (globalThis.AISolverLocator) {
+    const locate = (selector) => AISolverLocator.locate(document.querySelector(selector), viewport);
+    for (const count of [1, 2, 3, 5]) {
+      const all = [...document.querySelectorAll('.question')];
+      all.forEach((item, i) => item.hidden = i >= count);
+      for (const index of [...new Set([0, Math.floor(count / 2), count - 1])]) {
+        const n = index + 3;
+        check(`${count} visible questions: select ${n}`, () => {
+          const snapshot = locate(`#question_${n} .question_name`);
+          assert(snapshot.question.question_key === `question_${n}`, '다른 문항을 선택함');
+          assert(snapshot.question.options.length === 4, '보기 개수가 다름');
+          assert(snapshot.question.stem_text === `문항${n} 전용 본문: 물의 분자식은?`, '이웃 문항 본문 혼입');
+          assert(snapshot.question.options.every(o => o.text.startsWith(`문항${n} `)), '이웃 문항 보기 혼입');
+          const rect = document.querySelector(`#question_${n}`).getBoundingClientRect();
+          assert(snapshot.rect.x === rect.x && snapshot.rect.height === rect.height, '전체 문제 wrapper를 선택함');
+        });
+      }
+    }
+    document.querySelectorAll('.question').forEach(item => item.hidden = false);
+    for (const selector of ['#question_4 .question_text', '#question_4 .answer_text']) {
+      check(`inside same question: ${selector}`, () => assert(locate(selector).question.question_key === 'question_4', '문항 내부 선택 오류'));
+    }
+    for (const selector of ['#sidebar-number', '#questions', '#submit']) {
+      check(`reject outside question: ${selector}`, () => {
+        let rejected = false;
+        try { locate(selector); } catch { rejected = true; }
+        assert(rejected, '문항 밖에서 전송 가능한 결과가 생성됨');
+      });
+    }
+    check('reject clipped target while neighbors are irrelevant', () => {
+      const target = document.querySelector('#question_4');
+      const normal = target.getBoundingClientRect();
+      let rejected = false;
+      try { AISolverLocator.locate(target, {width: innerWidth, height: normal.bottom - 10}); } catch { rejected = true; }
+      assert(rejected, '잘린 보기를 허용함');
+      assert(AISolverLocator.locate(document.querySelector('#question_3'), {width: innerWidth, height: normal.bottom - 10}), '다른 문항이 잘린 것 때문에 완전한 대상도 거절함');
+    });
+    check('reject hidden option', () => {
+      const row = document.querySelector('#question_4 .answer');
+      row.hidden = true;
+      let rejected = false;
+      try { locate('#question_4 .question_name'); } catch { rejected = true; }
+      row.hidden = false;
+      assert(rejected, '숨겨진 보기를 누락한 채 허용함');
+    });
+    check('actual Canvas answer_label contains option text', () => {
+      const labels = [...document.querySelectorAll('#question_4 .answer_text')];
+      labels.forEach(label => label.className = 'answer_label');
+      try {
+        const actual = locate('#question_4 .question_name');
+        assert(actual.question.options[0].text === '문항4 H₂O', 'Canvas answer_label 보기 내용을 읽지 못함');
+      } finally { labels.forEach(label => label.className = 'answer_text'); }
+    });
+    check('reject nested distinct question', () => {
+      const nested = document.createElement('div');
+      nested.className = 'display_question question';
+      document.querySelector('#question_4').append(nested);
+      let rejected = false;
+      try { locate('#question_4 .question_name'); } catch { rejected = true; }
+      nested.remove();
+      assert(rejected, '여러 문항이 들어 있는 컨테이너를 허용함');
+    });
+    check('reject unverified external common passage', () => {
+      const common = document.createElement('div'); common.className = 'text_only_question'; common.textContent = '공통 지문'; document.body.append(common);
+      let rejected = false;
+      try { locate('#question_4 .question_name'); } catch { rejected = true; }
+      common.remove(); assert(rejected, '공통 지문 누락을 허용함');
+    });
+    check('selected root remains fixed and changes invalidate it', () => {
+      const messages = [];
+      chrome.runtime = {sendMessage: async value => messages.push(value)};
+      const root = document.querySelector('#question_4');
+      const initial = AISolverCapture.begin('fixed', root.querySelector('.question_name'));
+      assert(AISolverCapture.verify('fixed').question.question_key === initial.question.question_key, '대상이 바뀜');
+      root.style.transform = 'translateX(5px)';
+      let rejected = false;
+      try { AISolverCapture.verify('fixed'); } catch { rejected = true; }
+      AISolverCapture.end('fixed'); root.style.transform = '';
+      assert(rejected, '이동한 문항을 허용함');
+      AISolverCapture.begin('scroll', root.querySelector('.question_name'));
+      window.dispatchEvent(new Event('scroll'));
+      assert(messages.at(-1)?.request_id === 'scroll', '스크롤이 취소되지 않음');
+    });
+    check('same-size SVG changes invalidate the snapshot', () => {
+      const root = document.querySelector('#question_4');
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('width', '20'); svg.setAttribute('height', '20');
+      svg.innerHTML = '<rect width="20" height="20" fill="blue"/>'; root.querySelector('.question_text').append(svg);
+      AISolverCapture.begin('graphic', root);
+      svg.firstElementChild.setAttribute('fill', 'red');
+      let rejected = false;
+      try { AISolverCapture.verify('graphic'); } catch { rejected = true; }
+      AISolverCapture.end('graphic'); svg.remove();
+      assert(rejected, '같은 크기의 그림 변경을 허용함');
+    });
+    check('reject untracked canvas graphics', () => {
+      const root = document.querySelector('#question_4'), canvas = document.createElement('canvas');
+      canvas.width = 20; canvas.height = 20; root.querySelector('.question_text').append(canvas);
+      let rejected = false; try { locate('#question_4'); } catch { rejected = true; }
+      canvas.remove(); assert(rejected, '내용 변경을 추적하지 못하는 canvas를 허용함');
+    });
+    check('essential content cannot overflow the crop root', () => {
+      const root = document.querySelector('#question_4'); root.style.position = 'relative';
+      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+      svg.setAttribute('width', '40'); svg.setAttribute('height', '20');
+      svg.style.cssText = 'position:absolute;left:-20px;top:35px';
+      svg.innerHTML = '<rect width="40" height="20" fill="red"/>'; root.append(svg);
+      let rejected = false; try { locate('#question_4'); } catch { rejected = true; }
+      svg.remove(); root.style.position = ''; assert(rejected, 'crop 밖으로 넘친 그림을 허용함');
+    });
+    check('partial fixed header covering text is rejected', () => {
+      const r = document.querySelector('#question_4 .question_text').getBoundingClientRect();
+      const overlay = document.createElement('div'); overlay.style.cssText = `position:fixed;left:${r.x}px;top:${r.y}px;width:${r.width}px;height:4px;z-index:9999;background:white`; document.body.append(overlay);
+      let rejected = false; try { locate('#question_4'); } catch { rejected = true; }
+      overlay.remove(); assert(rejected, '고정 헤더가 본문 윗부분을 가림');
+    });
+  }
+  check('crop uses actual image dimensions', () => {
+    assert(globalThis.AISolverCrop, '이미지 좌표 변환이 아직 구현되지 않음');
+    const r = AISolverCrop.pixelRect({x: 10.25, y: 20.5, width: 100, height: 50}, {width: 1000, height: 800}, {width: 2000, height: 1600});
+    assert(JSON.stringify(r) === JSON.stringify({x: 20, y: 41, width: 201, height: 100}), '실제 배율 또는 경계 반올림 오류');
+  });
+  try {
+    const root = document.querySelector('#question_4');
+    const first = new Image(20, 20), replacement = new Image(20, 20);
+    const picture = color => 'data:image/svg+xml,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="${color}"/></svg>`);
+    first.src = picture('blue'); replacement.src = picture('red');
+    await Promise.all([first.decode(), replacement.decode()]);
+    root.querySelector('.question_text').append(first);
+    AISolverCapture.begin('image-replacement', root);
+    first.replaceWith(replacement);
+    let rejected = false;
+    try { AISolverCapture.verify('image-replacement'); } catch { rejected = true; }
+    AISolverCapture.end('image-replacement'); replacement.remove();
+    check('cached same-size image replacement invalidates snapshot', () => assert(rejected, '이미지 내용 변경을 허용함'));
+  } catch (error) { failed.push({name: 'cached image replacement', error: error.message}); }
+  for (const scale of [0.8, 1, 1.25, 1.5, 2]) {
+    try {
+      const canvas = new OffscreenCanvas(1000 * scale, 800 * scale), context = canvas.getContext('2d');
+      context.fillStyle = '#e00000'; context.fillRect(0, 0, canvas.width, canvas.height);
+      context.fillStyle = '#00b000'; context.fillRect(100 * scale, 200 * scale, 200 * scale, 100 * scale);
+      const blob = await canvas.convertToBlob({type: 'image/png'});
+      const url = URL.createObjectURL(blob);
+      const encoded = await AISolverCrop.crop(url, {rect: {x: 100, y: 200, width: 200, height: 100}, viewport: {width: 1000, height: 800}});
+      URL.revokeObjectURL(url);
+      const image = await createImageBitmap(await (await fetch(`data:image/png;base64,${encoded}`)).blob());
+      check(`actual crop pixels at scale ${scale}`, () => {
+        assert(image.width === 200 * scale && image.height === 100 * scale, '이미지 크기 오류');
+        const output = new OffscreenCanvas(image.width, image.height), ctx = output.getContext('2d'); ctx.drawImage(image, 0, 0);
+        const pixels = ctx.getImageData(0, 0, image.width, image.height).data;
+        for (let i = 0; i < pixels.length; i += 4) assert(pixels[i] === 0 && pixels[i + 1] === 176, '이웃 문항의 빨간 영역이 섞임');
+      });
+      image.close();
+    } catch (error) { failed.push({name: `crop scale ${scale}`, error: error.message}); }
+  }
+  document.querySelector('#result').textContent = JSON.stringify({passed: passed.length, failed, cases: passed});
+  document.title = failed.length ? 'FAIL AI Solver' : 'PASS AI Solver';
+})();
+</script>
+</html>

@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Canvas RAG Solver",
+  "version": "0.1.0",
+  "description": "선택 문항을 등록 자료와 함께 풀이하는 Mac 메뉴 앱 연결 확장",
+  "permissions": ["activeTab", "scripting", "storage", "nativeMessaging"],
+  "background": {"service_worker": "background.js"},
+  "action": {"default_popup": "popup.html", "default_title": "Canvas RAG Solver"},
+  "commands": {"solve-question": {"suggested_key": {"default": "Ctrl+Shift+Y", "mac": "Command+Shift+Y"}, "description": "커서가 가리킨 문항 풀이"}}
+}
