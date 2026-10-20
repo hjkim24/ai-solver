@@ -33,7 +33,8 @@ import UniformTypeIdentifiers
     private var modelTask: Task<Void, Never>?
     private var modelRequest = UUID()
     private let catalog: ModelCatalog
-    init(catalog: ModelCatalog = ModelCatalog()) { self.catalog = catalog; super.init() }
+    private let session: URLSession
+    init(catalog: ModelCatalog = ModelCatalog(), session: URLSession = .shared) { self.catalog = catalog; self.session = session; super.init() }
     private var modeField: NSPopUpButton?
     private var ledField: NSButton?
     private var ledStatusLabel: NSTextField?
@@ -41,7 +42,6 @@ import UniformTypeIdentifiers
     private var terminating = false
     private var terminationReady = false
     private var materialTask: Task<Void, Never>?
-    private var pollTask: Task<Void, Never>?
     private var busy = false
     private var materialMessage = "자료를 추가하거나 상태를 새로 고치세요."
 
@@ -84,7 +84,7 @@ import UniformTypeIdentifiers
         Task { await led.waitUntilIdle(); terminationReady = true; sender.terminate(nil) }
         return .terminateCancel
     }
-    func applicationWillTerminate(_ notification: Notification) { clipboard.setEnabled(false); jobs.setEnabled(false); materialTask?.cancel(); pollTask?.cancel(); modelTask?.cancel() }
+    func applicationWillTerminate(_ notification: Notification) { clipboard.setEnabled(false); jobs.setEnabled(false); materialTask?.cancel(); modelTask?.cancel() }
     private func showRecentResult() {
         let output = jobs.output
         resultSummary?.stringValue = output.message
@@ -106,7 +106,7 @@ import UniformTypeIdentifiers
     private func client(provider: AIProvider) throws -> any ImageSolverClient {
         let key = try KeychainStore.load(provider: provider)
         guard !key.isEmpty else { throw SolverFailure(message: "설정에서 API 키를 저장하세요.") }
-        return provider == .openai ? OpenAIClient(apiKey: key) : ClaudeClient(apiKey: key)
+        return provider == .openai ? OpenAIClient(apiKey: key, session: session) : ClaudeClient(apiKey: key, session: session)
     }
     private func solveImage(_ image: Data) {
         guard !terminating, jobs.enabled else { return }
@@ -119,7 +119,7 @@ import UniformTypeIdentifiers
             let api = try self.client(provider: configuration.provider)
             let started = ContinuousClock.now
             let response = try await api.answerScreenshot(image: image, configuration: configuration, timeout: 45) { state in
-                let text = ["preparing": "이미지 확인 중", "reading": "문항 인식 중", "searching": "자료 검색 중", "solving": "풀이 중"][state] ?? state
+                let text = ["preparing": "이미지 확인 중", "reading": "문항 인식 중", "solving": "풀이 중"][state] ?? state
                 stage(state, "\(configuration.mode.title) · \(text)")
             }
             try Task.checkCancellation()
@@ -127,7 +127,7 @@ import UniformTypeIdentifiers
             let number = result.answer_index
             let message = number.map { "문항 \(question.question_number ?? "선택") · 보기 \($0) (\(result.answer_label ?? "")) · \(result.basisLabel)" } ?? result.explanation
             let citations = result.sources.map { source in
-                let filename = response.evidence.first(where: { $0.file_id == source.file_id })?.filename ?? response.attachments.first(where: { $0.id == source.file_id })?.filename ?? source.file_id
+                let filename = response.attachments.first(where: { $0.id == source.file_id })?.filename ?? source.file_id
                 return "\(filename): “\(source.quote)”"
             }.joined(separator: "\n\n")
             let sourceNote: String
@@ -135,8 +135,6 @@ import UniformTypeIdentifiers
                 sourceNote = "AI가 제시한 첨부자료 인용 · 원문 확인 필요"
             } else if configuration.mode == .attachments && result.basis == "general" && !response.attachments.isEmpty {
                 sourceNote = "첨부자료에서 근거가 부족해 AI 지식으로 판단했습니다."
-            } else if configuration.mode == .rag && !result.sources.isEmpty {
-                sourceNote = "검색 구절과 인용문 일치 확인"
             } else { sourceNote = "" }
             let duration = started.duration(to: .now).components
             let seconds = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
@@ -218,11 +216,11 @@ import UniformTypeIdentifiers
             ]))
             AppInterface.fill(connection, AppInterface.separator())
             AppInterface.fill(connection, AppInterface.text("키는 공급자별로 macOS 키체인에 저장합니다. 비우고 저장하면 해당 키를 삭제합니다. ChatGPT·Claude 구독과 API 사용료는 별개입니다.", secondary: true))
-            AppInterface.fill(connection, AppInterface.text("자료는 공급자별로 관리합니다. OpenAI 자료는 원격 저장하며, Claude 자료는 Mac에 보관하고 첨부 또는 검색 구절을 풀이할 때 전송합니다.", secondary: true))
+            AppInterface.fill(connection, AppInterface.text("자료는 공급자별로 관리합니다. OpenAI 자료는 원격 저장하며, Claude 자료는 Mac에 보관하고 선택한 원본을 풀이할 때 전송합니다.", secondary: true))
             let general = AppInterface.column(spacing: 22)
             AppInterface.fill(general, AppInterface.section("풀이 방식", views: [
                 AppInterface.row("모드", control: mode),
-                AppInterface.text("일반 AI: 자료 없이 판단\n첨부자료 우선 AI: 선택한 자료를 먼저 참고하고 AI 지식으로 보완\nRAG: 준비된 자료의 검색 근거만 사용", secondary: true)
+                AppInterface.text("일반 AI: 자료 없이 판단\n첨부자료 우선 AI: 선택한 자료를 먼저 참고하고 AI 지식으로 보완", secondary: true)
             ]))
             AppInterface.fill(general, AppInterface.separator())
             AppInterface.fill(general, AppInterface.section("스크린샷 입력", views: [
@@ -362,7 +360,7 @@ import UniformTypeIdentifiers
         let title = label("등록 자료"); title.font = .systemFont(ofSize: 17, weight: .semibold)
         AppInterface.fill(stack, title)
         AppInterface.fill(stack, AppInterface.text("\(config.provider.title) · \(config.mode.title) · \(config.activeFiles.count)개 파일", secondary: true))
-        AppInterface.fill(stack, AppInterface.text("‘첨부’ 체크는 첨부자료 우선 AI에서만 사용합니다. 일반 AI는 자료를 보내지 않고, RAG는 준비된 자료 전체를 검색합니다.", secondary: true))
+        AppInterface.fill(stack, AppInterface.text("‘첨부’ 체크는 첨부자료 우선 AI에서만 사용합니다. 일반 AI는 자료를 보내지 않습니다.", secondary: true))
         AppInterface.fill(stack, AppInterface.separator())
         if config.activeFiles.isEmpty {
             let empty = AppInterface.column(spacing: 8)
@@ -392,8 +390,8 @@ import UniformTypeIdentifiers
         }
         AppInterface.fill(stack, AppInterface.text(materialMessage, secondary: true))
         let description = config.provider == .openai
-            ? "원본 첨부: 파일당 50 MB 미만 · 합계 50 MB 이하. 파일은 OpenAI 서버에 저장되며 제거하면 원격 파일도 삭제합니다. 등록 시 RAG 인덱싱도 수행합니다."
-            : "Claude 자료는 이 Mac에 별도 보관합니다(파일당·첨부 합계 12 MB 이하). 첨부는 원본을, RAG는 관련 텍스트 구절을 전송합니다. 스캔 PDF·텍스트 2 MB 초과 파일은 원본 첨부 전용입니다. RAG는 어휘 검색으로 동의어·그림을 검색하지 못할 수 있습니다."
+            ? "원본 첨부: 파일당 50 MB 미만 · 합계 50 MB 이하. 파일은 OpenAI 서버에 저장되며 제거하면 원격 파일도 삭제합니다."
+            : "Claude 자료는 이 Mac에 별도 보관합니다(파일당·첨부 합계 12 MB 이하). 첨부자료 우선 AI는 선택한 원본을 전송합니다."
         AppInterface.fill(stack, AppInterface.text(description, secondary: true))
         for (title, action) in [("자료 추가…", #selector(addFiles)), ("상태 새로 고침", #selector(refreshFiles))] {
             let button = AppInterface.button(title, target: self, action: action); button.isEnabled = !busy; footer?.addArrangedSubview(button)
@@ -415,9 +413,9 @@ import UniformTypeIdentifiers
     }
     private func performMaterials(_ operation: @escaping () async throws -> Void) {
         guard !busy else { return }
-        pollTask?.cancel(); busy = true; renderFiles()
+        busy = true; renderFiles()
         materialTask = Task {
-            defer { busy = false; renderFiles(); schedulePoll() }
+            defer { busy = false; renderFiles() }
             do { try await operation() }
             catch is CancellationError { return }
             catch { materialMessage = error is SolverFailure ? error.localizedDescription : "자료 요청에 실패했습니다. 연결을 확인하고 다시 시도하세요." }
@@ -441,50 +439,39 @@ import UniformTypeIdentifiers
                     catch { config.activeFiles.removeAll { $0.id == file.id }; try? store.remove(file.id); throw error }
                     jobs.invalidate("자료를 추가했습니다. 스크린샷을 다시 복사하세요.")
                 }
-                materialMessage = "Mac에 자료를 보관했습니다. 텍스트가 있는 자료는 RAG에서도 검색합니다."
+                materialMessage = "Mac에 자료 사본을 보관했습니다."
                 return
             }
             guard let api = try client(provider: .openai) as? OpenAIClient else { return }
-            if config.vectorStoreID.isEmpty { config.vectorStoreID = try await api.createStore(); try config.save() }
             for url in urls {
                 materialMessage = "업로드 중: \(url.lastPathComponent)"; renderFiles()
                 let id = try await api.upload(url)
-                config.activeFiles.append(ManagedFile(id: id, filename: url.lastPathComponent, status: "인덱싱 중", attached: true, byteCount: (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize))
+                config.activeFiles.append(ManagedFile(id: id, filename: url.lastPathComponent, status: "준비됨", attached: true, byteCount: (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize))
                 if config.mode == .attachments { jobs.invalidate("첨부 자료를 추가했습니다. 스크린샷을 다시 복사하세요.") }
                 try saveFiles()
-                do { try await api.attach(fileID: id, storeID: config.vectorStoreID) }
-                catch { try changeFile(id, "실패"); throw error }
             }
-            materialMessage = "업로드 완료. 인덱싱 상태를 확인하고 있습니다."
+            materialMessage = "원본 파일을 업로드했습니다."
         }
     }
     @objc private func refreshFiles() {
-        guard !config.activeFiles.isEmpty, config.provider == .anthropic || !config.vectorStoreID.isEmpty else { return }
+        guard !config.activeFiles.isEmpty else { return }
         performMaterials { [self] in
             if config.provider == .anthropic {
-                let store = ClaudeMaterials(); let files = config.activeFiles
+                let store = ClaudeMaterials(); let files = config.activeFiles.filter { !["삭제 중", "삭제 실패"].contains($0.status) }
                 let check = Task.detached { files.map { ($0.id, (try? store.status($0)) ?? "실패") } }
                 let statuses = await check.value
                 try Task.checkCancellation()
                 for (id, status) in statuses { try changeFile(id, status) }
-                materialMessage = "로컬 자료 확인 완료. 원본 첨부 전용 파일은 RAG에서 검색하지 않습니다."
+                materialMessage = "로컬 자료 확인을 완료했습니다."
                 return
             }
             guard let api = try client(provider: .openai) as? OpenAIClient else { return }
             for file in config.activeFiles where !["삭제 중", "삭제 실패"].contains(file.status) {
                 do {
-                    let state = try await api.fileStatus(fileID: file.id, storeID: config.vectorStoreID)
-                    try changeFile(file.id, state == "completed" ? "준비됨" : state == "in_progress" ? "인덱싱 중" : "실패")
+                    try await changeFile(file.id, api.fileStatus(fileID: file.id))
                 } catch { try changeFile(file.id, "실패"); throw error }
             }
-            materialMessage = "상태 확인 완료. RAG는 준비된 자료를, 첨부자료 우선 AI는 체크한 원본 파일을 사용합니다."
-        }
-    }
-    private func schedulePoll() {
-        guard config.activeFiles.contains(where: { $0.status == "인덱싱 중" }) else { return }
-        pollTask = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { return }
-            self?.refreshFiles()
+            materialMessage = "상태 확인 완료. 첨부자료 우선 AI는 체크한 원본 파일을 사용합니다."
         }
     }
     @objc private func removeFile(_ sender: NSButton) {
@@ -493,9 +480,9 @@ import UniformTypeIdentifiers
             try changeFile(id, "삭제 중")
             do {
                 if config.provider == .anthropic { try ClaudeMaterials().remove(id) }
-                else if let api = try client(provider: .openai) as? OpenAIClient { try await api.delete(fileID: id, storeID: config.vectorStoreID) }
+                else if let api = try client(provider: .openai) as? OpenAIClient { try await api.delete(fileID: id) }
                 config.activeFiles.removeAll { $0.id == id }; try saveFiles()
-                materialMessage = config.provider == .anthropic ? "Mac에 보관한 자료 사본을 삭제했습니다." : "원격 파일과 자료 연결을 삭제했습니다."
+                materialMessage = config.provider == .anthropic ? "Mac에 보관한 자료 사본을 삭제했습니다." : "원격 파일을 삭제했습니다."
             } catch { try changeFile(id, "삭제 실패"); throw error }
         }
     }

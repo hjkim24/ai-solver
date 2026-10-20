@@ -7,7 +7,7 @@ struct StructuredReply { let text: String; let usage: [String: Int] }
 protocol ImageSolverClient {
     var usage: [String: Int] { get }
     func structured(model: String, instructions: String, input: [AIInput], name: String, schema: [String: Any], timeout: Double) async throws -> StructuredReply
-    func answer(question: Question, png: Data, configuration: Configuration, timeout: Double, onStage: (String) -> Void) async throws -> (result: SolveResult, evidence: [Evidence], attachments: [ManagedFile])
+    func answer(question: Question, png: Data, configuration: Configuration, timeout: Double, onStage: (String) -> Void) async throws -> (result: SolveResult, attachments: [ManagedFile])
 }
 
 final class OpenAIClient: ImageSolverClient {
@@ -47,20 +47,7 @@ final class OpenAIClient: ImageSolverClient {
         if let body { request.httpBody = try JSONSerialization.data(withJSONObject: body) }
         return try await send(request)
     }
-    func search(query: String, storeID: String, allowedIDs: Set<String>, timeout: Double) async throws -> [Evidence] {
-        guard !allowedIDs.isEmpty else { return [] }
-        let response = try await json("vector_stores/\(component(storeID))/search", body: ["query": query, "max_num_results": 5], timeout: timeout)
-        guard let rows = response["data"] as? [[String: Any]] else { throw SolverFailure(message: "자료 검색 응답이 올바르지 않습니다.") }
-        return Array(rows.flatMap { row -> [Evidence] in
-            guard let id = row["file_id"] as? String, allowedIDs.contains(id), let name = row["filename"] as? String,
-                  let content = row["content"] as? [[String: Any]] else { return [] }
-            return content.compactMap { item in
-                guard item["type"] as? String == "text", let text = item["text"] as? String, !normalized(text).isEmpty else { return nil }
-                return Evidence(file_id: id, filename: name, text: text, score: row["score"] as? Double ?? 0)
-            }
-        }.prefix(5))
-    }
-    func answer(question: Question, png: Data, configuration: Configuration, timeout: Double, onStage: (String) -> Void) async throws -> (result: SolveResult, evidence: [Evidence], attachments: [ManagedFile]) {
+    func answer(question: Question, png: Data, configuration: Configuration, timeout: Double, onStage: (String) -> Void) async throws -> (result: SolveResult, attachments: [ManagedFile]) {
         usage = [:]
         try question.validate()
         let end = ContinuousClock.now.advanced(by: .seconds(timeout))
@@ -71,7 +58,6 @@ final class OpenAIClient: ImageSolverClient {
             guard seconds > 0 else { throw URLError(.timedOut) }
             return seconds
         }
-        var evidence: [Evidence] = []
         let attachments = configuration.mode == .attachments ? configuration.attachmentFiles : []
         switch configuration.mode {
         case .general: break
@@ -93,16 +79,10 @@ final class OpenAIClient: ImageSolverClient {
                 }
                 total += bytes
             }
-        case .rag:
-            guard !configuration.vectorStoreID.isEmpty, !configuration.readyIDs.isEmpty else {
-                throw SolverFailure(message: "RAG는 준비된 자료가 필요합니다. 자료를 등록하거나 설정에서 일반 AI를 선택하세요.", deferred: true)
-            }
-            onStage("searching")
-            evidence = try await search(query: question.searchQuery, storeID: configuration.vectorStoreID, allowedIDs: configuration.readyIDs, timeout: remaining())
         }
         onStage("solving")
-        let result = try await solve(question: question, png: png, evidence: evidence, model: configuration.selectedModel, timeout: remaining(), mode: configuration.mode, attachments: attachments)
-        return (result, evidence, attachments)
+        let result = try await solve(question: question, png: png, model: configuration.selectedModel, timeout: remaining(), mode: configuration.mode, attachments: attachments)
+        return (result, attachments)
     }
     func structured(model: String, instructions: String, input: [AIInput], name: String, schema: [String: Any], timeout: Double) async throws -> StructuredReply {
         let content: [[String: Any]] = input.map {
@@ -121,10 +101,6 @@ final class OpenAIClient: ImageSolverClient {
         usage = (response["usage"] as? [String: Any] ?? [:]).compactMapValues { $0 as? Int }
         return StructuredReply(text: blocks.filter { $0["type"] as? String == "output_text" }.compactMap { $0["text"] as? String }.joined(), usage: usage)
     }
-    func createStore() async throws -> String {
-        guard let id = try await json("vector_stores", body: ["name": "AI Solver 자료"])["id"] as? String else { throw SolverFailure(message: "자료 모음을 생성하지 못했습니다.") }
-        return id
-    }
     func upload(_ url: URL) async throws -> String {
         guard ["pdf", "txt", "md"].contains(url.pathExtension.lowercased()), (try url.resourceValues(forKeys: [.isRegularFileKey])).isRegularFile == true else { throw SolverFailure(message: "읽을 수 있는 PDF/TXT/MD 파일을 선택하세요.") }
         let data = try Data(contentsOf: url, options: .mappedIfSafe)
@@ -139,34 +115,27 @@ final class OpenAIClient: ImageSolverClient {
         guard let id = try await send(request)["id"] as? String else { throw SolverFailure(message: "파일 업로드 결과를 확인하지 못했습니다.") }
         return id
     }
-    func attach(fileID: String, storeID: String) async throws {
-        _ = try await json("vector_stores/\(component(storeID))/files", body: ["file_id": fileID])
+    func fileStatus(fileID: String) async throws -> String {
+        let file = try await json("files/\(component(fileID))", method: "GET")
+        guard file["id"] as? String == fileID else { throw SolverFailure(message: "자료 정보를 확인하지 못했습니다.") }
+        return "준비됨"
     }
-    func fileStatus(fileID: String, storeID: String) async throws -> String {
-        guard let status = try await json("vector_stores/\(component(storeID))/files/\(component(fileID))", method: "GET")["status"] as? String else { throw SolverFailure(message: "자료 처리 상태를 확인하지 못했습니다.") }
-        return status
-    }
-    func delete(fileID: String, storeID: String) async throws {
-        if !storeID.isEmpty {
-            guard try await json("vector_stores/\(component(storeID))/files/\(component(fileID))", method: "DELETE")["deleted"] as? Bool == true else { throw SolverFailure(message: "자료 연결 삭제를 확인하지 못했습니다.") }
-        }
+    func delete(fileID: String) async throws {
         guard try await json("files/\(component(fileID))", method: "DELETE")["deleted"] as? Bool == true else { throw SolverFailure(message: "원격 파일 삭제를 확인하지 못했습니다.") }
     }
 }
 
 extension ImageSolverClient {
-    func solve(question: Question, png: Data, evidence: [Evidence], model: String, timeout: Double, mode: SolveMode = .rag, attachments: [ManagedFile] = []) async throws -> SolveResult {
+    func solve(question: Question, png: Data, model: String, timeout: Double, mode: SolveMode = .general, attachments: [ManagedFile] = []) async throws -> SolveResult {
         try question.validate()
-        if mode == .rag && evidence.isEmpty { return SolveResult(status: "no_evidence", answer_index: nil, answer_label: nil, explanation: "등록 자료에서 근거를 찾지 못했습니다.", sources: [], basis: "none") }
         let sourceSchema: [String: Any] = ["type": "object", "properties": ["file_id": ["type": "string"], "quote": ["type": "string"]], "required": ["file_id", "quote"], "additionalProperties": false]
         let schema: [String: Any] = ["type": "object", "properties": [
-            "status": ["type": "string", "enum": ["answered", "no_evidence", "uncertain", "unreadable", "unsupported"]],
+            "status": ["type": "string", "enum": ["answered", "uncertain", "unreadable", "unsupported"]],
             "answer_index": ["type": ["integer", "null"]], "answer_label": ["type": ["string", "null"]],
             "explanation": ["type": "string"], "sources": ["type": "array", "items": sourceSchema],
             "basis": ["type": "string", "enum": ["materials", "general", "mixed", "none"]]
         ], "required": ["status", "answer_index", "answer_label", "explanation", "sources", "basis"], "additionalProperties": false]
         var context: [String: Any] = ["question": try JSONSerialization.jsonObject(with: JSONEncoder().encode(question))]
-        if mode == .rag { context["evidence"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(evidence)) }
         if mode == .attachments { context["attachments"] = attachments.map { ["file_id": $0.id, "filename": $0.filename] } }
         let modeInstructions: String
         switch mode {
@@ -177,12 +146,7 @@ extension ImageSolverClient {
             첨부된 원본 파일 내용을 우선 참고하세요. 관련 근거가 파일에 없거나 부족하면 모델 지식으로 판단해 답을 내세요. 파일이 없으면 모델 지식만 사용합니다.
             answered의 basis는 자료만으로 답하면 materials, 모델 지식만이면 general, 둘을 함께 사용하면 mixed입니다.
             general이면 sources는 빈 배열입니다. materials/mixed이면 sources 1~5개가 필요하며 file_id는 첨부 목록의 값, quote는 그 파일의 실제 문구 1~500자입니다.
-            자료 부족은 no_evidence로 보류할 이유가 아닙니다. 모델 지식으로도 확신할 수 없으면 uncertain으로 보류하세요.
-            """
-        case .rag:
-            modeInstructions = """
-            제공된 검색 자료 근거만으로 판단하세요. 근거가 부족하면 no_evidence로 보류합니다. 모델 지식으로 보완하지 마세요.
-            answered의 basis는 materials이며 sources 1~5개가 필요합니다. file_id는 제공 근거의 값, quote는 해당 검색 구절에서 그대로 인용한 1~500자 문구입니다.
+            자료 부족만으로 보류하지 마세요. 모델 지식으로도 확신할 수 없으면 uncertain으로 보류하세요.
             """
         }
         let instructions = """
@@ -199,7 +163,7 @@ extension ImageSolverClient {
         let text = response.text
         guard let data = text.data(using: .utf8), let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], Set(object.keys) == Set(["status", "answer_index", "answer_label", "explanation", "sources", "basis"]) else { throw SolverFailure(message: "AI 결과 JSON 형식이 올바르지 않습니다.") }
         let result = try JSONDecoder().decode(SolveResult.self, from: data)
-        try result.validate(question: question, evidence: evidence, mode: mode, attachments: attachments)
+        try result.validate(question: question, mode: mode, attachments: attachments)
         return result
     }
 }

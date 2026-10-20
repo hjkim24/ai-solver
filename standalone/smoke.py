@@ -41,7 +41,7 @@ def main():
                 time.sleep(0.2)
             assert configuration, "Startup did not save its own configuration"
             assert configuration["mode"] == "general" and not configuration["capsLockBlink"]
-            assert configuration["files"] == [] and configuration["vectorStoreID"] == ""
+            assert configuration["files"] == [] and configuration["claudeFiles"] == []
             subprocess.run([str(quitter), bundle], check=True, capture_output=True, timeout=15)
             stdout, stderr = process.communicate(timeout=10)
             assert process.returncode == 0, "App did not quit cleanly"

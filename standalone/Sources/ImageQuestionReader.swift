@@ -6,7 +6,7 @@ private struct RecognizedQuestion: Decodable {
 }
 
 extension ImageSolverClient {
-    func answerScreenshot(image: Data, configuration: Configuration, timeout: Double, onStage: (String) -> Void) async throws -> (question: Question, result: SolveResult, evidence: [Evidence], attachments: [ManagedFile], usage: [String: Int]) {
+    func answerScreenshot(image: Data, configuration: Configuration, timeout: Double, onStage: (String) -> Void) async throws -> (question: Question, result: SolveResult, attachments: [ManagedFile], usage: [String: Int]) {
         let end = ContinuousClock.now.advanced(by: .seconds(timeout))
         func remaining() throws -> Double {
             try Task.checkCancellation()
@@ -15,9 +15,6 @@ extension ImageSolverClient {
             guard seconds > 0 else { throw URLError(.timedOut) }; return seconds
         }
         _ = try remaining()
-        if configuration.mode == .rag && ((configuration.provider == .openai && configuration.vectorStoreID.isEmpty) || configuration.readyIDs.isEmpty) {
-            throw SolverFailure(message: "RAG는 준비된 자료가 필요합니다. 자료를 등록하거나 일반 AI를 선택하세요.", deferred: true)
-        }
         onStage("preparing")
         let conversion = Task.detached(priority: .userInitiated) { try ClipboardImage.png(from: image) }
         let png = try await withTaskCancellationHandler(operation: { try await conversion.value }, onCancel: { conversion.cancel() })
@@ -26,7 +23,7 @@ extension ImageSolverClient {
         let response = try await answer(question: read.question, png: png, configuration: configuration, timeout: remaining(), onStage: onStage)
         _ = try remaining()
         let total = read.usage.merging(usage, uniquingKeysWith: +)
-        return (read.question, response.result, response.evidence, response.attachments, total)
+        return (read.question, response.result, response.attachments, total)
     }
 
     private func readQuestion(png: Data, model: String, timeout: Double) async throws -> (question: Question, usage: [String: Int]) {

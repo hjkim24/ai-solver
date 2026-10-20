@@ -21,7 +21,6 @@ import UniformTypeIdentifiers
     private var terminating = false
     private var terminationReady = false
     private var materialTask: Task<Void, Never>?
-    private var pollTask: Task<Void, Never>?
     private var busy = false
     private var materialMessage = "등록 자료는 OpenAI 서버에 저장됩니다. 제거는 원격 파일도 삭제합니다."
 
@@ -51,7 +50,7 @@ import UniformTypeIdentifiers
         Task { await led.waitUntilIdle(); terminationReady = true; sender.terminate(nil) }
         return .terminateCancel
     }
-    func applicationWillTerminate(_ notification: Notification) { jobs.setEnabled(false); materialTask?.cancel(); pollTask?.cancel() }
+    func applicationWillTerminate(_ notification: Notification) { jobs.setEnabled(false); materialTask?.cancel() }
     private func showRecentResult() {
         let output = jobs.output
         recentLabel?.stringValue = (output.detail.isEmpty ? output.message : output.detail) + "\n\n" + ledMessage
@@ -119,14 +118,14 @@ import UniformTypeIdentifiers
                 let api = try self.client()
                 let started = ContinuousClock.now
                 let response = try await api.answer(question: question, png: png, configuration: configuration, timeout: Double(ms) / 1000) { state in
-                    stage(state, "문항 \(question.question_number ?? "선택"): \(configuration.mode.title) · \(state == "searching" ? "자료 검색 중" : "풀이 중")")
+                    stage(state, "문항 \(question.question_number ?? "선택"): \(configuration.mode.title) · 풀이 중")
                 }
                 try Task.checkCancellation()
                 let result = response.result
                 let number = result.answer_index
                 let message = number.map { "문항 \(question.question_number ?? "선택") · 보기 \($0) (\(result.answer_label ?? "")) · \(result.basisLabel)" } ?? result.explanation
                 let citations = result.sources.map { source in
-                    let filename = response.evidence.first(where: { $0.file_id == source.file_id })?.filename ?? response.attachments.first(where: { $0.id == source.file_id })?.filename ?? source.file_id
+                    let filename = response.attachments.first(where: { $0.id == source.file_id })?.filename ?? source.file_id
                     return "\(filename): “\(source.quote)”"
                 }.joined(separator: "\n\n")
                 let sourceNote: String
@@ -134,8 +133,6 @@ import UniformTypeIdentifiers
                     sourceNote = "AI가 제시한 첨부자료 인용 · 원문 확인 필요"
                 } else if configuration.mode == .attachments && result.basis == "general" && !response.attachments.isEmpty {
                     sourceNote = "첨부자료에서 근거가 부족해 AI 지식으로 판단했습니다."
-                } else if configuration.mode == .rag && !result.sources.isEmpty {
-                    sourceNote = "검색 구절과 인용문 일치 확인"
                 } else { sourceNote = "" }
                 let duration = started.duration(to: .now).components
                 let seconds = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
@@ -180,7 +177,7 @@ import UniformTypeIdentifiers
             mode.selectItem(at: SolveMode.allCases.firstIndex(of: config.mode)!)
             mode.setAccessibilityLabel("풀이 모드"); modeField = mode
             stack.addArrangedSubview(label("풀이 모드")); stack.addArrangedSubview(mode)
-            stack.addArrangedSubview(label("일반 AI: 자료 없이 판단\n첨부자료 우선 AI: 자료 관리에서 체크한 원본 파일을 참고하고, 없거나 부족하면 AI 지식으로 판단\nRAG: 준비된 자료의 검색 근거만 사용하며 근거가 없으면 보류"))
+            stack.addArrangedSubview(label("일반 AI: 자료 없이 판단\n첨부자료 우선 AI: 자료 관리에서 체크한 원본 파일을 참고하고, 없거나 부족하면 AI 지식으로 판단"))
             let blink = NSButton(checkboxWithTitle: "정답 번호만큼 Caps Lock LED 깜빡이기", target: nil, action: nil)
             blink.state = config.capsLockBlink ? .on : .off; ledField = blink; stack.addArrangedSubview(blink)
             stack.addArrangedSubview(label("MacBook 내장 키보드 전용 · Caps Lock 입력 상태는 유지합니다. 새 문항·중지·종료 시 점멸을 취소하고 원복합니다. 처음 켜거나 테스트할 때 macOS 입력 모니터링 권한이 필요할 수 있습니다."))
@@ -219,7 +216,7 @@ import UniformTypeIdentifiers
         guard let stack = materialStack else { return }
         stack.arrangedSubviews.forEach { stack.removeArrangedSubview($0); $0.removeFromSuperview() }
         stack.addArrangedSubview(label(materialMessage))
-        stack.addArrangedSubview(label("현재 모드: \(config.mode.title)\n‘첨부’ 체크는 첨부자료 우선 AI에서만 사용합니다. 새 파일은 자동 체크되며, 기존 파일은 직접 체크하세요. 일반 AI는 자료를 보내지 않고, RAG는 준비된 자료 전체를 검색합니다.\n원본 첨부는 파일당 50 MB 미만·합계 50 MB 이하입니다. 매 요청 파일 입력 비용이 발생할 수 있습니다. 등록 파일은 RAG 인덱싱도 수행합니다."))
+        stack.addArrangedSubview(label("현재 모드: \(config.mode.title)\n‘첨부’ 체크는 첨부자료 우선 AI에서만 사용합니다. 새 파일은 자동 체크되며, 기존 파일은 직접 체크하세요. 일반 AI는 자료를 보내지 않습니다.\n원본 첨부는 파일당 50 MB 미만·합계 50 MB 이하입니다. 매 요청 파일 입력 비용이 발생할 수 있습니다."))
         for file in config.files {
             let row = NSStackView(); row.orientation = .horizontal
             let selected = NSButton(checkboxWithTitle: "첨부", target: self, action: #selector(selectAttachment(_:)))
@@ -252,9 +249,9 @@ import UniformTypeIdentifiers
     }
     private func performMaterials(_ operation: @escaping (OpenAIClient) async throws -> Void) {
         guard !busy else { return }
-        pollTask?.cancel(); busy = true; renderFiles()
+        busy = true; renderFiles()
         materialTask = Task {
-            defer { busy = false; renderFiles(); schedulePoll() }
+            defer { busy = false; renderFiles() }
             do { try await operation(client()) }
             catch is CancellationError { return }
             catch { materialMessage = error is SolverFailure ? error.localizedDescription : "자료 요청에 실패했습니다. 연결을 확인하고 다시 시도하세요." }
@@ -267,36 +264,25 @@ import UniformTypeIdentifiers
         guard panel.runModal() == .OK else { return }
         let urls = panel.urls
         performMaterials { [self] api in
-            if config.vectorStoreID.isEmpty { config.vectorStoreID = try await api.createStore(); try config.save() }
             for url in urls {
                 materialMessage = "업로드 중: \(url.lastPathComponent)"; renderFiles()
                 let id = try await api.upload(url)
-                config.files.append(ManagedFile(id: id, filename: url.lastPathComponent, status: "인덱싱 중", attached: true, byteCount: (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize))
+                config.files.append(ManagedFile(id: id, filename: url.lastPathComponent, status: "준비됨", attached: true, byteCount: (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize))
                 if config.mode == .attachments { jobs.invalidate("첨부 자료를 추가했습니다. 문항을 다시 선택하세요.") }
                 try saveFiles()
-                do { try await api.attach(fileID: id, storeID: config.vectorStoreID) }
-                catch { try changeFile(id, "실패"); throw error }
             }
-            materialMessage = "업로드 완료. 인덱싱 상태를 확인하고 있습니다."
+            materialMessage = "원본 파일을 업로드했습니다."
         }
     }
     @objc private func refreshFiles() {
-        guard !config.files.isEmpty, !config.vectorStoreID.isEmpty else { return }
+        guard !config.files.isEmpty else { return }
         performMaterials { [self] api in
             for file in config.files where !["삭제 중", "삭제 실패"].contains(file.status) {
                 do {
-                    let state = try await api.fileStatus(fileID: file.id, storeID: config.vectorStoreID)
-                    try changeFile(file.id, state == "completed" ? "준비됨" : state == "in_progress" ? "인덱싱 중" : "실패")
+                    try await changeFile(file.id, api.fileStatus(fileID: file.id))
                 } catch { try changeFile(file.id, "실패"); throw error }
             }
-            materialMessage = "상태 확인 완료. RAG는 준비된 자료를, 첨부자료 우선 AI는 체크한 원본 파일을 사용합니다."
-        }
-    }
-    private func schedulePoll() {
-        guard config.files.contains(where: { $0.status == "인덱싱 중" }) else { return }
-        pollTask = Task { [weak self] in
-            do { try await Task.sleep(nanoseconds: 3_000_000_000) } catch { return }
-            self?.refreshFiles()
+            materialMessage = "상태 확인 완료. 첨부자료 우선 AI는 체크한 원본 파일을 사용합니다."
         }
     }
     @objc private func removeFile(_ sender: NSButton) {
@@ -304,8 +290,8 @@ import UniformTypeIdentifiers
         performMaterials { [self] api in
             try changeFile(id, "삭제 중")
             do {
-                try await api.delete(fileID: id, storeID: config.vectorStoreID)
-                config.files.removeAll { $0.id == id }; try saveFiles(); materialMessage = "원격 파일과 자료 연결을 삭제했습니다."
+                try await api.delete(fileID: id)
+                config.files.removeAll { $0.id == id }; try saveFiles(); materialMessage = "원격 파일을 삭제했습니다."
             } catch { try changeFile(id, "삭제 실패"); throw error }
         }
     }

@@ -59,19 +59,11 @@ final class ClaudeClient: ImageSolverClient {
         usage = (object["usage"] as? [String: Any] ?? [:]).compactMapValues { $0 as? Int }
         return StructuredReply(text: blocks.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined(), usage: usage)
     }
-    func answer(question: Question, png: Data, configuration: Configuration, timeout: Double, onStage: (String) -> Void) async throws -> (result: SolveResult, evidence: [Evidence], attachments: [ManagedFile]) {
+    func answer(question: Question, png: Data, configuration: Configuration, timeout: Double, onStage: (String) -> Void) async throws -> (result: SolveResult, attachments: [ManagedFile]) {
         usage = [:]
         try question.validate()
         let end = ContinuousClock.now.advanced(by: .seconds(timeout))
-        var evidence: [Evidence] = []
         let attachments = configuration.mode == .attachments ? configuration.attachmentFiles : []
-        if configuration.mode == .rag {
-            guard !configuration.readyIDs.isEmpty else { throw SolverFailure(message: "Claude RAG에 검색 가능한 자료를 추가하세요.", deferred: true) }
-            onStage("searching")
-            let store = materials; let files = configuration.activeFiles
-            let search = Task.detached { try store.search(query: question.searchQuery, files: files) }
-            evidence = try await withTaskCancellationHandler(operation: { try await search.value }, onCancel: { search.cancel() })
-        }
         if !attachments.isEmpty {
             var total = 0
             for file in attachments { total += try materials.data(file.id).count }
@@ -82,7 +74,7 @@ final class ClaudeClient: ImageSolverClient {
         let remaining = Double(duration.seconds) + Double(duration.attoseconds) / 1e18
         guard remaining > 0 else { throw URLError(.timedOut) }
         onStage("solving")
-        let result = try await solve(question: question, png: png, evidence: evidence, model: configuration.selectedModel, timeout: remaining, mode: configuration.mode, attachments: attachments)
-        return (result, evidence, attachments)
+        let result = try await solve(question: question, png: png, model: configuration.selectedModel, timeout: remaining, mode: configuration.mode, attachments: attachments)
+        return (result, attachments)
     }
 }

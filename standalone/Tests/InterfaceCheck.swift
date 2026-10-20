@@ -16,6 +16,8 @@ final class ModelFixture: URLProtocol {
         let data: Data
         if url.host == "api.anthropic.com" {
             data = try! JSONSerialization.data(withJSONObject: ["data": [["id": "claude-fixture", "display_name": "Claude Fixture", "capabilities": ["image_input": ["supported": true], "structured_outputs": ["supported": true]]]], "has_more": false])
+        } else if url.host == "api.openai.com" && url.path.hasPrefix("/v1/files/") {
+            data = try! JSONSerialization.data(withJSONObject: ["id": url.lastPathComponent, "bytes": 10])
         } else if url.host == "api.openai.com" {
             data = try! JSONSerialization.data(withJSONObject: ["data": [["id": "gpt-4.1-mini"]]])
         } else if url.path.hasSuffix("all.md") {
@@ -54,12 +56,11 @@ final class ModelFixture: URLProtocol {
         precondition(Bundle.main.bundleIdentifier?.hasPrefix("com.hjkim24.clipboard-interface-fixture.") == true)
         var fixture = Configuration(); fixture.mode = .attachments
         fixture.files = [ManagedFile(id: "fixture-file", filename: "나노신소재실험_아주_긴_이름의_강의자료_2026_최종_수정_참고문서.pdf", status: "실패", attached: true, byteCount: 10)]
-        // Empty vector store prevents startup refresh from making any HTTP request.
         try fixture.save()
         let app = NSApplication.shared; app.setActivationPolicy(.accessory)
         if CommandLine.arguments.contains("--preview") { app.setActivationPolicy(.regular) }
         let network = URLSessionConfiguration.ephemeral; network.protocolClasses = [ModelFixture.self]
-        let delegate = AppDelegate(catalog: ModelCatalog(session: URLSession(configuration: network))); app.delegate = delegate; app.mainMenu = makeApplicationMenu()
+        let delegate = AppDelegate(catalog: ModelCatalog(session: URLSession(configuration: network)), session: URLSession(configuration: network)); app.delegate = delegate; app.mainMenu = makeApplicationMenu()
         let observer = NotificationCenter.default.addObserver(forName: NSApplication.didFinishLaunchingNotification, object: app, queue: .main) { _ in
             DispatchQueue.main.async {
                 if CommandLine.arguments.contains("--preview") {
@@ -96,6 +97,8 @@ final class ModelFixture: URLProtocol {
         let key = general.compactMap { $0 as? NSSecureTextField }.first!
         guard let model = general.compactMap({ $0 as? NSPopUpButton }).first(where: { $0.identifier?.rawValue == "model" }) else { fatalError("model picker missing; model must not require typing") }
         let mode = descendants(tabs.tabViewItems[1].view!).compactMap { $0 as? NSPopUpButton }.first!
+        check(mode.itemTitles == ["일반 AI", "첨부자료 우선 AI"], "only supported solve modes appear")
+        check(!descendants(window.contentView!).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("RAG") }, "settings contain only current mode descriptions")
         check(key.stringValue == "fixture-key" && model.selectedItem?.representedObject as? String == fixture.model && mode.indexOfSelectedItem == 1, "existing settings populate fields")
         key.stringValue = "fixture-updated"
         let provider = general.compactMap { $0 as? NSPopUpButton }.first { $0.identifier?.rawValue == "provider" }!
@@ -150,6 +153,7 @@ final class ModelFixture: URLProtocol {
         let materials = app.windows.first { $0.isVisible && $0.title == "자료 관리" }!
         try image(materials, name: "materials")
         let controls = descendants(materials.contentView!)
+        check(!controls.compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("RAG") }, "materials describe only original attachments")
         check(controls.compactMap { $0 as? NSButton }.contains { $0.title == "첨부" && $0.state == .on && $0.identifier?.rawValue == "fixture-file" }, "attachment selection preserved")
         check(controls.compactMap { $0 as? NSButton }.contains { $0.title == "제거" && $0.action == NSSelectorFromString("removeFile:") }, "remove action preserved")
         check(controls.compactMap { $0 as? NSTextField }.contains { $0.stringValue == fixture.files[0].filename && $0.lineBreakMode == .byTruncatingMiddle }, "long filenames truncate")

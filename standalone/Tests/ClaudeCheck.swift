@@ -41,9 +41,7 @@ final class ClaudeStub: URLProtocol {
         let document = temp.appendingPathComponent("lecture.txt")
         try Data("Voltage is the difference in electric potential. 전압은 전위차이다.".utf8).write(to: document)
         let file = try materials.add(document)
-        check(file.status == "준비됨", "local text is searchable")
-        let evidence = try materials.search(query: "voltage", files: [file])
-        check(evidence.first?.file_id == file.id, "RAG retrieves relevant file")
+        check(file.status == "준비됨", "local text is ready to attach")
         let configuration = URLSessionConfiguration.ephemeral; configuration.protocolClasses = [ClaudeStub.self]
         func api(_ replies: [[String: Any]], status: Int = 200) -> ClaudeClient {
             ClaudeStub.requests = []; ClaudeStub.bodies = []; ClaudeStub.replies = replies; ClaudeStub.status = status
@@ -55,7 +53,7 @@ final class ClaudeStub: URLProtocol {
         let pdfURL = temp.appendingPathComponent("scan.pdf"); try blank.dataRepresentation()!.write(to: pdfURL)
         let pdf = try materials.add(pdfURL)
         let pdfInput = try materials.input(pdf)
-        check(pdf.status == "원본 첨부 전용" && (pdfInput["source"] as? [String: Any])?["media_type"] as? String == "application/pdf", "scanned PDF remains attachable but is not searchable")
+        check(pdf.status == "준비됨" && (pdfInput["source"] as? [String: Any])?["media_type"] as? String == "application/pdf", "scanned PDF is ready as an original document")
         var config = Configuration(); config.provider = .anthropic; config.claudeModel = "claude-fixture"; config.mode = .general
         config.files = [ManagedFile(id: "file-openai-private", filename: "private.pdf", status: "준비됨", attached: true)]
         config.claudeFiles = [file]
@@ -74,15 +72,14 @@ final class ClaudeStub: URLProtocol {
         client = api([message(read), message(answer)])
         _ = try await client.answerScreenshot(image: image, configuration: config, timeout: 45, onStage: { _ in })
         check(String(describing: ClaudeStub.bodies.last!).contains("Voltage is the difference"), "Claude attaches full text")
-        config.mode = .rag
-        var cited = answer; cited["basis"] = "materials"; cited["sources"] = [["file_id": file.id, "quote": "Voltage is the difference in electric potential."]]
+        var cited = answer; cited["basis"] = "mixed"; cited["sources"] = [["file_id": file.id, "quote": "Voltage is the difference in electric potential."]]
         client = api([message(read), message(cited)])
         result = try await client.answerScreenshot(image: image, configuration: config, timeout: 45, onStage: { _ in })
-        check(result.evidence.count == 1 && result.result.basis == "materials", "Claude RAG validates exact local quotes")
-        var unrelated = read; unrelated["stem_text"] = "vitamin fruit"; unrelated["options"] = [["index": 1, "label": "A", "text": "apple"], ["index": 2, "label": "B", "text": "orange"]]
-        client = api([message(unrelated)])
+        check(result.attachments.map(\.id) == [file.id] && result.result.basis == "mixed" && ClaudeStub.requests.count == 2, "Claude combines original documents and model knowledge")
+        config.claudeFiles = []
+        client = api([message(read), message(answer)])
         result = try await client.answerScreenshot(image: image, configuration: config, timeout: 45, onStage: { _ in })
-        check(result.result.status == "no_evidence" && ClaudeStub.requests.count == 1 && result.usage["input_tokens"] == 10, "empty RAG evidence does not double recognition usage")
+        check(result.result.basis == "general" && result.usage["input_tokens"] == 20, "attachment mode can answer without files")
         config.mode = .general
         for response in [message(read, stop: "max_tokens"), ["stop_reason": "refusal", "content": []], ["stop_reason": "end_turn", "content": [["type": "text", "text": "bad-json"]]]] {
             client = api([response])

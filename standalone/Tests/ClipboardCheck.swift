@@ -104,7 +104,6 @@ final class PromisedText: NSObject, NSPasteboardItemDataProvider {
 
         var config = Configuration(); config.mode = .general
         config.files = [ManagedFile(id: "file-private", filename: "private.pdf", status: "준비됨", attached: true, byteCount: 10)]
-        config.vectorStoreID = "vs-private"
         var client = api([envelope(question), envelope(answer)])
         let result = try await client.answerScreenshot(image: png, configuration: config, timeout: 45, onStage: { _ in })
         check(result.result.answer_index == 2 && result.question.stem_text == "1 + 1은?", "image to answer")
@@ -135,10 +134,6 @@ final class PromisedText: NSObject, NSPasteboardItemDataProvider {
             do { _ = try await client.answerScreenshot(image: png, configuration: config, timeout: 45, onStage: { _ in }); fatalError("HTTP failure accepted") } catch { passed += 1 }
             check(Stub.requests.count == 1, "no automatic retry")
         }
-        var rag = Configuration(); rag.mode = .rag
-        client = api([])
-        do { _ = try await client.answerScreenshot(image: png, configuration: rag, timeout: 45, onStage: { _ in }); fatalError("empty RAG accepted") } catch { passed += 1 }
-        check(Stub.requests.isEmpty, "empty RAG costs no requests")
         client = api([])
         do { _ = try await client.answerScreenshot(image: png, configuration: config, timeout: 0, onStage: { _ in }); fatalError("expired deadline accepted") } catch { passed += 1 }
         check(Stub.requests.isEmpty, "expired deadline never sends")
@@ -149,13 +144,6 @@ final class PromisedText: NSObject, NSPasteboardItemDataProvider {
         let attachedContent = (Stub.requests[1]["input"] as! [[String: Any]])[0]["content"] as! [[String: Any]]
         check(attachedContent.contains { $0["type"] as? String == "input_file" && $0["file_id"] as? String == "file-private" }, "attachment bridge")
         check(Stub.requests.count == 2, "known attachment size avoids metadata request")
-        config.mode = .rag
-        var ragAnswer = answer; ragAnswer["basis"] = "materials"; ragAnswer["sources"] = [["file_id": "file-private", "quote": "one plus one is two"]]
-        let search: [String: Any] = ["data": [["file_id": "file-private", "filename": "private.pdf", "content": [["type": "text", "text": "one plus one is two"]]]]]
-        client = api([envelope(question), search, envelope(ragAnswer)])
-        let ragResult = try await client.answerScreenshot(image: png, configuration: config, timeout: 45, onStage: { _ in })
-        check(ragResult.result.answer_index == 2 && ragResult.evidence.count == 1, "RAG bridge and citation validation")
-        check(Stub.requests.count == 3 && Stub.requests[1]["_path"] as? String == "/v1/vector_stores/vs-private/search", "RAG search between recognition and answer")
         config.mode = .general
         client = api([envelope(question), envelope(answer)])
         let task = Task {

@@ -6,7 +6,7 @@ import ImageIO
         let path = "build/Clipboard AI Solver.app"
         let bundle = Bundle(path: path)!
         precondition(bundle.bundleIdentifier == "com.hjkim24.clipboard-ai-solver")
-        precondition(bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == "0.2.2")
+        precondition(bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String == "0.2.3")
         precondition(bundle.object(forInfoDictionaryKey: "CFBundleIconFile") as? String == "AppIcon.icns")
         let url = bundle.url(forResource: "AppIcon", withExtension: "icns")!
         let source = CGImageSourceCreateWithURL(url as CFURL, nil)!

@@ -6,7 +6,7 @@
 
 스크린샷 속 객관식 문항을 OpenAI 또는 Claude로 읽고 풀이하는 macOS 메뉴 바 앱입니다. 메뉴 바에는 보기 번호를 표시하고, 최근 결과에서 인식한 문항·해설·출처를 확인할 수 있습니다. 브라우저 확장 없이 실행합니다.
 
-**[v0.2.2 DMG 다운로드 · Apple Silicon](https://github.com/hjkim24/ai-solver/releases/download/v0.2.2/Clipboard-AI-Solver-0.2.2-arm64.dmg)** · [최신 릴리스](https://github.com/hjkim24/ai-solver/releases/latest) · [SHA-256](https://github.com/hjkim24/ai-solver/releases/download/v0.2.2/Clipboard-AI-Solver-0.2.2-arm64.dmg.sha256)
+**[v0.2.3 DMG 다운로드 · Apple Silicon](https://github.com/hjkim24/ai-solver/releases/download/v0.2.3/Clipboard-AI-Solver-0.2.3-arm64.dmg)** · [최신 릴리스](https://github.com/hjkim24/ai-solver/releases/latest) · [SHA-256](https://github.com/hjkim24/ai-solver/releases/download/v0.2.3/Clipboard-AI-Solver-0.2.3-arm64.dmg.sha256)
 
 ## 설치
 
@@ -49,7 +49,6 @@
 | --- | --- |
 | 일반 AI | 등록 자료를 보내지 않고 이미지와 모델 지식으로 판단 |
 | 첨부자료 우선 AI | 체크한 원본 자료를 우선 참고하고, 근거가 부족하면 모델 지식으로 보완 |
-| RAG · 자료 근거만 | 준비된 자료를 검색하고 실제 검색 구절과 일치하는 인용을 검증. 근거가 없으면 보류 |
 
 **자료 관리**에서 PDF·UTF-8 TXT·MD를 추가합니다. 공급자를 바꿔도 기존 자료를 보존하며, 공급자 사이에서 자동 이동하지 않습니다.
 
@@ -57,10 +56,9 @@
 | --- | --- | --- |
 | 자료 보관 | OpenAI 계정에 업로드 | 이 Mac에 별도 사본 저장 |
 | 원본 첨부 | 파일당 50 MB 미만, 합계 50 MB 이하 | 합계 12 MB 이하. PDF는 원본 문서, TXT/MD는 텍스트 문서로 전달 |
-| RAG 검색 | OpenAI Vector Store | PDFKit 추출 텍스트·TXT/MD에서 로컬 어휘 검색, 상위 5개 구절 전달 |
-| 자료 제거 | 원격 파일과 자료 연결 삭제 | Mac의 사본 삭제. 사용자가 선택했던 원본은 유지 |
+| 자료 제거 | 원격 파일 삭제 | Mac의 사본 삭제. 사용자가 선택했던 원본은 유지 |
 
-Claude RAG는 임베딩 의미 검색이나 OCR을 수행하지 않아 동의어·스캔·그림 검색에 한계가 있습니다. 텍스트가 없거나 추출 텍스트가 2 MB를 넘는 파일은 **원본 첨부 전용**으로 표시합니다. 첨부자료 모드의 인용은 파일 ID만 검증하므로 원문 확인이 필요합니다. PDF 페이지·문맥 제한은 선택 모델에 따릅니다.
+첨부자료 모드의 인용은 파일 ID만 검증하므로 원문 확인이 필요합니다. PDF 페이지·문맥 제한은 선택 모델에 따릅니다.
 
 ## Caps Lock LED
 
@@ -75,9 +73,9 @@ Claude RAG는 임베딩 의미 검색이나 OCR을 수행하지 않아 동의어
 ## 전송 정보와 제한
 
 - 사용 중 새로 복사한 **모든 이미지**가 처리 대상이며 선택한 AI 공급자로 전송됩니다. 전체 화면의 문제 외 내용도 포함됩니다. 이미지 내용은 앱이 디스크·로그에 저장하지 않습니다.
-- 문항 인식 1회와 풀이 1회에 API를 호출합니다. OpenAI RAG는 중간 검색 요청이 추가됩니다. 이미지·첨부 입력은 호출별 과금이며 실패 시 자동 재시도하지 않습니다. OpenAI Responses는 `store: false`로 요청합니다.
+- 문항 인식 1회와 풀이 1회에 API를 호출합니다. 이미지·첨부 입력은 호출별 과금이며 실패 시 자동 재시도하지 않습니다. OpenAI Responses는 `store: false`로 요청합니다.
 - 단일 정답 객관식 한 문제, 보기 2~10개를 지원합니다. 여러 문제·잘림·판독 불가·복수 정답을 감지하면 보류합니다. AI가 잘못 읽거나 판단할 수 있으므로 인식 내용과 결과를 확인하세요.
-- 전체 처리 제한은 45초입니다. RAG에 준비된 자료가 없으면 인식 API 호출 전 보류합니다.
+- 전체 처리 제한은 45초입니다.
 - 입력 이미지는 64 MiB·40 MP·한 변 20,000 px 이하이며 정규화 PNG는 10 MiB 이하입니다. Claude는 추가로 한 변 8,000 px·PNG 7.5 MB 이하, 전체 JSON 요청 32 MB 이하를 검사합니다.
 - 결과는 앱 메모리에만 유지하고 새 요청·사용 중지 시 지웁니다. 키는 키체인, 자료 목록과 설정은 UserDefaults에 저장합니다. Claude 자료 사본은 `~/Library/Application Support/Clipboard AI Solver/ClaudeMaterials`에 보관합니다.
 - 앱은 브라우저 접근·화면 직접 녹화·답안 자동 입력·제출을 수행하지 않습니다.
@@ -133,6 +131,4 @@ bash scripts/package.sh
 - GPT/Claude 선택·모델 필터·인식/풀이·설정·자료 처리: 모의 HTTP, 합성 이미지, 임시 자료와 격리 UI로 검증. 공개 OpenAI 모델 문서는 실제 조회·파싱 확인.
 - 서명·설치·배포: 변경된 두 빌드의 서명 호환, 다른 서명 주체 배제, 설치 실패 시 복원, DMG 구성·서명·체크섬 확인.
 - 0.2.1 → 0.2.2 업데이트의 LED 권한 유지: 사용자 실제 확인.
-- 새 Claude 경로의 실제 계정·유료 추론, RAG 정확도·지연의 정량 평가와 다른 Mac·OS 조합은 아직 별도 확인이 필요합니다.
-
-구 Canvas 확장 방식의 기록은 [보관 문서](docs/legacy-extension.md)에 있습니다.
+- 새 Claude 경로의 실제 계정·유료 추론, 다른 Mac·OS 조합은 아직 별도 확인이 필요합니다.
